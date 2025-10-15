@@ -1,0 +1,8 @@
+# 双目视觉悬链线重建项目依赖包
+numpy
+opencv-python
+scipy
+matplotlib
+PyYAML
+scikit-image
+scikit-learn
