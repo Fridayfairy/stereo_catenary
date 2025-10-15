@@ -9,6 +9,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 demo/
+output/
 build/
 develop-eggs/
 dist/

@@ -4,11 +4,91 @@
 """
 
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import cv2
 from typing import List, Tuple, Optional, Callable
 import matplotlib.patches as patches
+import os
+
+# 检查是否在无头环境中运行
+def is_headless():
+    """检查是否在无头环境中运行"""
+    return os.environ.get('DISPLAY') is None or 'headless' in os.environ.get('MATPLOTLIB_BACKEND', '').lower()
+
+# 设置合适的后端
+if is_headless():
+    matplotlib.use('Agg')
+    print("检测到无头环境，使用Agg后端")
+else:
+    try:
+        matplotlib.use('TkAgg')
+        print("使用TkAgg后端")
+    except:
+        matplotlib.use('Agg')
+        print("TkAgg不可用，使用Agg后端")
+
+# 设置中文字体支持
+def setup_chinese_font():
+    """设置中文字体支持"""
+    try:
+        # 尝试使用系统中文字体
+        import matplotlib.font_manager as fm
+        
+        # 常见的中文字体列表
+        chinese_fonts = [
+            'AR PL UKai CN',    # 文鼎PL中楷
+            'AR PL UMing CN',   # 文鼎PL明体
+            'Noto Sans CJK JP', # Google Noto字体（日文版支持中文）
+            'Noto Serif CJK JP', # Google Noto字体（日文版支持中文）
+            'SimHei',           # 黑体
+            'Microsoft YaHei',  # 微软雅黑
+            'WenQuanYi Micro Hei',  # 文泉驿微米黑
+            'DejaVu Sans',      # 默认字体
+            'Arial Unicode MS', # Arial Unicode
+            'Noto Sans CJK SC', # Google Noto字体
+            'Source Han Sans SC' # 思源黑体
+        ]
+        
+        # 查找可用的中文字体
+        available_fonts = [f.name for f in fm.fontManager.ttflist]
+        
+        for font_name in chinese_fonts:
+            if font_name in available_fonts:
+                plt.rcParams['font.sans-serif'] = [font_name]
+                plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+                print(f"使用中文字体: {font_name}")
+                return True
+        
+        # 如果没有找到中文字体，使用默认字体但禁用警告
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        print("未找到中文字体，使用默认字体")
+        return False
+        
+    except Exception as e:
+        print(f"字体设置失败: {e}")
+        return False
+
+# 初始化中文字体
+setup_chinese_font()
+
+def smart_show(fig=None, filename=None, title="plot"):
+    """
+    智能显示函数：在无头环境下自动保存图片，在有显示环境下显示窗口
+    """
+    if fig is None:
+        fig = plt.gcf()
+    
+    if is_headless():
+        if filename is None:
+            filename = f"output/{title.replace(' ', '_')}.png"
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        fig.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"图表已保存到: {filename}")
+    else:
+        smart_show(title="wire_detection")
 
 
 def plot_wire_detection_results(imgL: np.ndarray, 
@@ -58,7 +138,7 @@ def plot_wire_detection_results(imgL: np.ndarray,
     
     plt.suptitle(title)
     plt.tight_layout()
-    plt.show()
+    smart_show(title="wire_detection")
 
 
 def plot_stereo_matches(imgL: np.ndarray, 
@@ -118,7 +198,7 @@ def plot_stereo_matches(imgL: np.ndarray,
     ax.axis('off')
     
     plt.tight_layout()
-    plt.show()
+    smart_show(title="wire_detection")
 
 
 def plot_3d_points(points_3d: np.ndarray,
@@ -192,7 +272,7 @@ def plot_3d_points(points_3d: np.ndarray,
         ax.set_ylim(mid_y - max_range, mid_y + max_range)
         ax.set_zlim(mid_z - max_range, mid_z + max_range)
     
-    plt.show()
+    smart_show(title="wire_detection")
 
 
 def plot_plane_projection(s_list: np.ndarray, 
@@ -278,7 +358,7 @@ def plot_plane_projection(s_list: np.ndarray,
     
     plt.suptitle(title)
     plt.tight_layout()
-    plt.show()
+    smart_show(title="wire_detection")
 
 
 def plot_catenary_fitting(s: np.ndarray, 
@@ -342,7 +422,7 @@ def plot_catenary_fitting(s: np.ndarray,
     
     plt.suptitle(title)
     plt.tight_layout()
-    plt.show()
+    smart_show(title="wire_detection")
 
 
 def plot_3d_catenary_curve(catenary_3d: Callable[[np.ndarray], np.ndarray],
@@ -398,7 +478,7 @@ def plot_3d_catenary_curve(catenary_3d: Callable[[np.ndarray], np.ndarray],
     ax.set_ylim(mid_y - max_range, mid_y + max_range)
     ax.set_zlim(mid_z - max_range, mid_z + max_range)
     
-    plt.show()
+    smart_show(title="wire_detection")
 
 
 def plot_pipeline_summary(imgL: np.ndarray,
@@ -540,7 +620,7 @@ def plot_pipeline_summary(imgL: np.ndarray,
     
     plt.suptitle('双目视觉悬链线重建完整流程', fontsize=16)
     plt.tight_layout()
-    plt.show()
+    smart_show(title="wire_detection")
 
 
 if __name__ == "__main__":
