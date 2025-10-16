@@ -19,7 +19,7 @@ def detect_wire_pixels(img: np.ndarray,
     
     参数:
         img: 输入图像 (灰度图或彩色图)
-        method: 检测方法 ('canny_hough', 'ridge', 'skeleton')
+        method: 检测方法 ('canny_hough', 'ridge', 'skeleton', 'catenary')
         min_line_length: 霍夫变换最小线段长度
         max_line_gap: 霍夫变换最大线段间隙
         
@@ -38,6 +38,8 @@ def detect_wire_pixels(img: np.ndarray,
         return _detect_with_ridge(gray)
     elif method == 'skeleton':
         return _detect_with_skeleton(gray)
+    elif method == 'catenary':
+        return _detect_with_catenary(gray)
     else:
         raise ValueError(f"不支持的检测方法: {method}")
 
@@ -119,6 +121,133 @@ def _detect_with_skeleton(gray: np.ndarray) -> np.ndarray:
     # 提取骨架像素坐标
     y_coords, x_coords = np.where(skeleton)
     return np.column_stack([x_coords, y_coords])
+
+
+def _detect_with_catenary(gray: np.ndarray) -> np.ndarray:
+    """
+    使用适合悬链线形态的鲁棒二次曲线拟合进行导线像素检测。
+    流程：
+      1) 软化 + Canny 获取候选边缘点；
+      2) 在 y=f(x) 与 x=f(y) 两种模型上分别做RANSAC二次拟合；
+      3) 选择内点数最多且残差更小的模型，输出内点；
+      4) 沿拟合曲线进行稠密采样以增强连续性。
+    返回坐标为 [x, y]。
+    """
+    # 预处理
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150, apertureSize=3)
+
+    # 候选点（边缘点）
+    ys, xs = np.nonzero(edges)
+    if len(xs) < 30:
+        return np.array([]).reshape(0, 2)
+    points = np.column_stack([xs, ys])  # [x, y]
+
+    # RANSAC 设置
+    rng = np.random.default_rng(42)
+    max_trials = 300
+    residual_threshold = 1.5  # 像素
+
+    def fit_quadratic_xy(sample_pts: np.ndarray):
+        # 拟合 y = a x^2 + b x + c
+        X = sample_pts[:, 0]
+        Y = sample_pts[:, 1]
+        A = np.column_stack([X**2, X, np.ones_like(X)])
+        try:
+            coef, _, _, _ = np.linalg.lstsq(A, Y, rcond=None)
+            return coef  # a, b, c
+        except np.linalg.LinAlgError:
+            return None
+
+    def residuals_xy(coef, pts: np.ndarray):
+        a, b, c = coef
+        X = pts[:, 0]
+        Y = pts[:, 1]
+        Y_pred = a * X**2 + b * X + c
+        return np.abs(Y - Y_pred)
+
+    def fit_quadratic_yx(sample_pts: np.ndarray):
+        # 拟合 x = a y^2 + b y + c
+        X = sample_pts[:, 0]
+        Y = sample_pts[:, 1]
+        A = np.column_stack([Y**2, Y, np.ones_like(Y)])
+        try:
+            coef, _, _, _ = np.linalg.lstsq(A, X, rcond=None)
+            return coef  # a, b, c
+        except np.linalg.LinAlgError:
+            return None
+
+    def residuals_yx(coef, pts: np.ndarray):
+        a, b, c = coef
+        Y = pts[:, 1]
+        X = pts[:, 0]
+        X_pred = a * Y**2 + b * Y + c
+        return np.abs(X - X_pred)
+
+    def ransac(points_arr: np.ndarray, model_fit_fn, resid_fn):
+        n_points = len(points_arr)
+        best_inliers = None
+        best_coef = None
+        best_score = -1
+        for _ in range(max_trials):
+            # 至少3点拟合二次曲线
+            sample_idx = rng.choice(n_points, size=6, replace=False) if n_points >= 6 else np.arange(n_points)
+            sample = points_arr[sample_idx]
+            coef = model_fit_fn(sample)
+            if coef is None:
+                continue
+            res = resid_fn(coef, points_arr)
+            inliers_mask = res < residual_threshold
+            num_inliers = np.sum(inliers_mask)
+            if num_inliers > best_score:
+                best_score = num_inliers
+                best_inliers = inliers_mask
+                best_coef = coef
+        # 用内点做一次精拟合
+        if best_inliers is None or np.sum(best_inliers) < 6:
+            return None, None
+        refined_coef = model_fit_fn(points_arr[best_inliers])
+        if refined_coef is None:
+            refined_coef = best_coef
+        return refined_coef, best_inliers
+
+    # 在两种模型上做RANSAC
+    coef_xy, inliers_xy = ransac(points, fit_quadratic_xy, residuals_xy)
+    coef_yx, inliers_yx = ransac(points, fit_quadratic_yx, residuals_yx)
+
+    # 选择更优模型
+    def score(inliers):
+        return -1 if inliers is None else int(np.sum(inliers))
+    score_xy = score(inliers_xy)
+    score_yx = score(inliers_yx)
+
+    if score_xy <= 0 and score_yx <= 0:
+        return np.array([]).reshape(0, 2)
+
+    use_xy = score_xy >= score_yx
+    if use_xy:
+        a, b, c = coef_xy
+        inliers_pts = points[inliers_xy]
+        # 稠密采样
+        x_min, x_max = int(np.min(inliers_pts[:, 0])), int(np.max(inliers_pts[:, 0]))
+        xs_dense = np.linspace(x_min, x_max, num=max(50, x_max - x_min + 1))
+        ys_dense = a * xs_dense**2 + b * xs_dense + c
+        dense_pts = np.column_stack([xs_dense, ys_dense])
+    else:
+        a, b, c = coef_yx
+        inliers_pts = points[inliers_yx]
+        y_min, y_max = int(np.min(inliers_pts[:, 1])), int(np.max(inliers_pts[:, 1]))
+        ys_dense = np.linspace(y_min, y_max, num=max(50, y_max - y_min + 1))
+        xs_dense = a * ys_dense**2 + b * ys_dense + c
+        dense_pts = np.column_stack([xs_dense, ys_dense])
+
+    # 合并内点与稠密点，并裁剪到图像范围
+    all_pts = np.vstack([inliers_pts, dense_pts])
+    all_pts[:, 0] = np.clip(np.round(all_pts[:, 0]), 0, gray.shape[1] - 1)
+    all_pts[:, 1] = np.clip(np.round(all_pts[:, 1]), 0, gray.shape[0] - 1)
+    all_pts = np.unique(all_pts.astype(int), axis=0)
+
+    return all_pts
 
 
 def _get_line_pixels(x1: int, y1: int, x2: int, y2: int) -> List[Tuple[int, int]]:

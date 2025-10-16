@@ -81,6 +81,10 @@ def compute_fundamental_matrix(K1: np.ndarray, R1: np.ndarray, t1: np.ndarray,
     C2 = -R2.T @ t2
     
     # 计算基础矩阵
+    # P2: 右相机投影矩阵
+    # C1: 左相机中心
+    # e2: 右图像中的极点
+    # e2_skew: 右图像中的极点对应的反对称矩阵
     e2 = P2 @ np.hstack([C1, 1])  # 右图像中的极点
     e2_skew = np.array([[0, -e2[2], e2[1]],
                        [e2[2], 0, -e2[0]],
@@ -314,6 +318,51 @@ def filter_matches_by_sampson_error(matches: List[Tuple[np.ndarray, np.ndarray]]
     return filtered_matches
 
 
+def filter_matches_by_right_uniqueness(matches: List[Tuple[np.ndarray, np.ndarray]],
+                                       F: np.ndarray,
+                                       bin_tolerance_px: float = 1.0) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """
+    右图唯一性过滤：如果多个左点匹配到右图近同一列（x 接近），
+    仅保留 Sampson 误差最小的那个，抑制“竖直条带”式错误匹配。
+
+    参数:
+        matches: [(ptL, ptR), ...]
+        F: 基础矩阵（用于计算 Sampson 误差）
+        bin_tolerance_px: 将右图 x 轴按该像素宽度分桶
+
+    返回:
+        过滤后的匹配
+    """
+    if len(matches) <= 1:
+        return matches
+
+    # 分桶键：右图 x / 宽度
+    buckets = {}
+    for ptL, ptR in matches:
+        key = int(round(ptR[0] / max(1e-6, bin_tolerance_px)))
+        if key not in buckets:
+            buckets[key] = []
+        buckets[key].append((ptL, ptR))
+
+    kept: List[Tuple[np.ndarray, np.ndarray]] = []
+    for key, pairs in buckets.items():
+        if len(pairs) == 1:
+            kept.append(pairs[0])
+            continue
+        # 选择 Sampson 误差最小的匹配
+        best_pair = None
+        best_err = float('inf')
+        for ptL, ptR in pairs:
+            err = compute_sampson_error(ptL, ptR, F)
+            if err < best_err:
+                best_err = err
+                best_pair = (ptL, ptR)
+        if best_pair is not None:
+            kept.append(best_pair)
+
+    return kept
+
+
 def compute_sampson_error(pt1: np.ndarray, pt2: np.ndarray, F: np.ndarray) -> float:
     """
     计算Sampson误差
@@ -426,4 +475,5 @@ if __name__ == "__main__":
     plt.imshow(cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB))
     plt.title('双目匹配结果')
     plt.axis('off')
+
     plt.show()

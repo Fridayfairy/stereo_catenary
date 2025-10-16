@@ -552,10 +552,10 @@ def plot_pipeline_summary(imgL: np.ndarray,
     ax3.imshow(combined_img, cmap='gray')
     
     # 绘制部分匹配线
-    display_matches = matches[:20] if len(matches) > 20 else matches
+    display_matches = matches[:50] if len(matches) > 50 else matches
     for i, (ptL, ptR) in enumerate(display_matches):
         color = plt.cm.tab10(i % 10)
-        ax3.plot([ptL[0], ptR[0] + w1], [ptL[1], ptR[1]], color=color, linewidth=1, alpha=0.7)
+        ax3.plot([ptL[0], ptR[0] + w1], [ptL[1], ptR[1]], color=color, linewidth=2, alpha=0.6)
     
     ax3.set_title(f'双目匹配\n({len(matches)}个匹配)')
     ax3.axis('off')

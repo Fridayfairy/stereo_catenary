@@ -12,7 +12,7 @@ from scipy.optimize import minimize
 def triangulate_pairs(pairs: List[Tuple[np.ndarray, np.ndarray]], 
                      P1: np.ndarray, 
                      P2: np.ndarray,
-                     method: str = 'dlt') -> np.ndarray:
+                     method: str = 'optimal') -> np.ndarray:
     """
     将匹配点对三角测量为3D点
     

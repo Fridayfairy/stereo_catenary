@@ -13,7 +13,7 @@ import warnings
 
 # 导入自定义模块
 from line_detect import detect_wire_pixels, filter_wire_pixels
-from stereo_match import match_along_epipolar, filter_matches_by_sampson_error
+from stereo_match import match_along_epipolar, filter_matches_by_sampson_error, filter_matches_by_right_uniqueness
 from triangulation import triangulate_pairs, compute_reprojection_error, filter_outliers_by_reprojection
 from plane_estimation import estimate_vertical_plane, project_to_plane, compute_plane_quality
 from catenary_fit import fit_catenary, compose_catenary_3d, compute_fitting_quality, ransac_catenary_fit
@@ -75,7 +75,8 @@ def load_images(left_path: str, right_path: str) -> Tuple[np.ndarray, np.ndarray
 def run_stereo_catenary_pipeline(imgL: np.ndarray, 
                                 imgR: np.ndarray,
                                 config: Dict[str, Any],
-                                verbose: bool = True) -> Dict[str, Any]:
+                                verbose: bool = True,
+                                detect_method: str = 'canny_hough') -> Dict[str, Any]:
     """
     运行完整的双目视觉悬链线重建流程
     
@@ -99,8 +100,8 @@ def run_stereo_catenary_pipeline(imgL: np.ndarray,
     if verbose:
         print("\n1. 导线像素检测...")
     
-    wire_pixelsL = detect_wire_pixels(imgL, method='canny_hough')
-    wire_pixelsR = detect_wire_pixels(imgR, method='canny_hough')
+    wire_pixelsL = detect_wire_pixels(imgL, method=detect_method)
+    wire_pixelsR = detect_wire_pixels(imgR, method=detect_method)
     
     # 过滤噪声像素
     wire_pixelsL = filter_wire_pixels(wire_pixelsL, imgL.shape[:2])
@@ -137,10 +138,11 @@ def run_stereo_catenary_pipeline(imgL: np.ndarray,
     if len(matches) < 3:
         raise ValueError("匹配点对数量不足，无法进行三角测量")
     
-    # 使用Sampson误差过滤匹配
+    # 使用Sampson误差与右图唯一性过滤匹配
     from stereo_match import compute_fundamental_matrix
     F = compute_fundamental_matrix(K1, R1, t1, K2, R2, t2)
-    matches = filter_matches_by_sampson_error(matches, F, threshold=2.0)
+    matches = filter_matches_by_sampson_error(matches, F, threshold=config.get('sampson_threshold', 1.2))
+    matches = filter_matches_by_right_uniqueness(matches, F, bin_tolerance_px=config.get('right_uniqueness_bin', 2.0))
     
     results['matches'] = matches
     
@@ -197,6 +199,8 @@ def run_stereo_catenary_pipeline(imgL: np.ndarray,
         print("\n5. 平面投影...")
     
     s_list, z_list = project_to_plane(points_3d, p0, u, g_hat_est)
+    # 投影后按 s 分桶剔除“竖直列”：若同一 s 桶内 z 方差过大则删除
+    s_list, z_list = _remove_vertical_stripes(s_list, z_list)
     
     results['s_list'] = s_list
     results['z_list'] = z_list
@@ -257,6 +261,30 @@ def run_stereo_catenary_pipeline(imgL: np.ndarray,
     return results
 
 
+def _remove_vertical_stripes(s_list: np.ndarray, z_list: np.ndarray,
+                             bin_width: float = 10.0,
+                             var_threshold: float = 200.0) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    按 s 分桶，删除同一桶内 z 方差异常大的列，抑制“竖直散点线”。
+    bin_width: s 方向分桶宽度（与数据尺度相关，可根据场景调整）
+    var_threshold: z 方差阈值（像素或物理单位平方）
+    """
+    if len(s_list) == 0:
+        return s_list, z_list
+    # 构建桶
+    s0 = np.min(s_list)
+    keys = ((s_list - s0) / max(1e-6, bin_width)).astype(int)
+    keep_mask = np.ones_like(s_list, dtype=bool)
+    for k in np.unique(keys):
+        idx = (keys == k)
+        if np.sum(idx) < 3:
+            continue
+        varz = np.var(z_list[idx])
+        if varz > var_threshold:
+            keep_mask[idx] = False
+    return s_list[keep_mask], z_list[keep_mask]
+
+
 def save_results(results: Dict[str, Any], output_dir: str) -> None:
     """
     保存处理结果
@@ -300,13 +328,16 @@ def main():
     主函数
     """
     parser = argparse.ArgumentParser(description='双目视觉悬链线重建')
-    parser.add_argument('--left', type=str, default='./demo/data/skiboots1/ambient/F0/im0e0.png', help='左图像路径')
-    parser.add_argument('--right', type=str, default='./demo/data/skiboots1/ambient/F0/im1e0.png', help='右图像路径')
-    parser.add_argument('--config', type=str, default='config/cameras.yaml', help='相机配置文件路径')
+    parser.add_argument('--left', type=str, default='./demo/simulation/Outputs/left_20251015_174818.png', help='左图像路径')
+    parser.add_argument('--right', type=str, default='./demo/simulation/Outputs/right_20251015_174818.png', help='右图像路径')
+    parser.add_argument('--config', type=str, default='./config/simulation.yaml', help='相机配置文件路径')
     parser.add_argument('--output', type=str, default='output', help='输出目录')
+    parser.add_argument('--detect-method', type=str, default='catenary', choices=['canny_hough', 'ridge', 'skeleton', 'catenary'], help='导线像素检测方法')
     parser.add_argument('--show-plots', action='store_true', help='显示可视化图表')
     parser.add_argument('--save-plots', action='store_true', help='保存可视化图表')
     parser.add_argument('--verbose', action='store_true', default=True, help='显示详细信息')
+    parser.add_argument('--sampson-th', type=float, default=1.2, help='Sampson误差阈值')
+    parser.add_argument('--uniq-bin', type=float, default=2.0, help='右图唯一性分桶像素宽度')
     
     args = parser.parse_args()
     
@@ -321,8 +352,10 @@ def main():
         print(f"左图像尺寸: {imgL.shape}")
         print(f"右图像尺寸: {imgR.shape}")
         
-        # 运行处理流程
-        results = run_stereo_catenary_pipeline(imgL, imgR, config, verbose=args.verbose)
+        # 运行处理流程（将阈值注入配置）
+        config['sampson_threshold'] = args.sampson_th
+        config['right_uniqueness_bin'] = args.uniq_bin
+        results = run_stereo_catenary_pipeline(imgL, imgR, config, verbose=args.verbose, detect_method=args.detect_method)
         
         # 保存结果
         save_results(results, args.output)
