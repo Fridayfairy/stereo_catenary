@@ -43,20 +43,12 @@ def estimate_vertical_plane(Xs: np.ndarray,
     u = u / np.linalg.norm(u)
     
     # 3. 选择平面上的参考点p0
-    # 使用点云在导线方向上的投影中心
+    # 正确做法：让平面通过点云质心，平面法向量 n = u × g_hat
     centroid = np.mean(Xs, axis=0)
-    
-    # 将质心投影到平面上
-    # 平面方程: (X - p0) · n = 0，其中n是平面法向量
-    # 平面法向量 n = u × g_hat
     n = np.cross(u, g_hat)
     n = n / np.linalg.norm(n)
-    
-    # 计算质心到平面的距离
-    d = np.dot(centroid, n)
-    
-    # 将质心投影到平面上
-    p0 = centroid - d * n
+    # 令 p0 为质心本身（而不是投影到过原点的平面），避免引入全局偏移
+    p0 = centroid
     
     return p0, u, g_hat
 
