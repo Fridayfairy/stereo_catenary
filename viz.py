@@ -367,7 +367,11 @@ def plot_catenary_fitting(s: np.ndarray,
                          s0: float, 
                          c: float,
                          quality: Optional[dict] = None,
-                         title: str = "悬链线拟合结果") -> None:
+                         title: str = "悬链线拟合结果",
+                         points_3d: Optional[np.ndarray] = None,
+                         p0: Optional[np.ndarray] = None,
+                         u: Optional[np.ndarray] = None,
+                         g_hat: Optional[np.ndarray] = None) -> None:
     """
     可视化悬链线拟合结果
     
@@ -378,7 +382,14 @@ def plot_catenary_fitting(s: np.ndarray,
         quality: 拟合质量指标
         title: 图像标题
     """
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    # 若提供了平面信息，增加第三幅子图展示重力垂直平面投影 (s, v)
+    use_vertical_plane = (points_3d is not None and p0 is not None and u is not None and g_hat is not None
+                          and len(points_3d) > 0)
+    if use_vertical_plane:
+        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+        ax1, ax2, ax3 = axes[0], axes[1], axes[2]
+    else:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     
     # 拟合结果图
     ax1.scatter(s, z, c='blue', alpha=0.7, s=30, label='数据点')
@@ -420,6 +431,30 @@ def plot_catenary_fitting(s: np.ndarray,
             ax2.text(0.02, 0.98, residual_text, transform=ax2.transAxes, 
                      verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
     
+    # 第三幅：重力垂直平面投影 (s, v)
+    if use_vertical_plane:
+        # 计算 v_perp = normalize(g_hat × u)，并投影 3D 点
+        v_perp = np.cross(g_hat, u)
+        nv = np.linalg.norm(v_perp)
+        if nv > 1e-9:
+            v_perp = v_perp / nv
+            vecs = points_3d - p0.reshape(1, 3)
+            s_perp = vecs @ u.reshape(3)
+            v_vals = vecs @ v_perp.reshape(3)
+            ax3.scatter(s_perp, v_vals, c='purple', alpha=0.7, s=30, label='(s, v) 投影点')
+            # 理想悬链线位于该平面的 v=0 轴，绘制参考线
+            if len(s_perp) > 0:
+                s_min, s_max = np.min(s_perp), np.max(s_perp)
+                ax3.plot([s_min, s_max], [0, 0], 'k--', linewidth=1, label='理想 v=0')
+            ax3.set_xlabel('s (沿导线方向)')
+            ax3.set_ylabel('v (垂直重力且垂直导线)')
+            ax3.set_title('重力垂直平面投影')
+            ax3.grid(True, alpha=0.3)
+            ax3.legend()
+        else:
+            ax3.text(0.5, 0.5, 'u 与 g_hat 共线，无法构建垂直平面', ha='center')
+            ax3.axis('off')
+
     plt.suptitle(title)
     plt.tight_layout()
     smart_show(title="wire_detection")
@@ -492,7 +527,10 @@ def plot_pipeline_summary(imgL: np.ndarray,
                          a: float,
                          s0: float,
                          c: float,
-                         quality: Optional[dict] = None) -> None:
+                         quality: Optional[dict] = None,
+                         p0: Optional[np.ndarray] = None,
+                         u: Optional[np.ndarray] = None,
+                         g_hat: Optional[np.ndarray] = None) -> None:
     """
     绘制完整的处理流程总结图
     
@@ -569,26 +607,63 @@ def plot_pipeline_summary(imgL: np.ndarray,
     ax4.set_ylabel('Y')
     ax4.set_zlabel('Z')
     
-    # 4. 平面投影
+    # 4. 地面投影（将3D点与拟合曲线投影到与重力垂直的“地面”平面）
     ax5 = plt.subplot(2, 4, 5)
-    ax5.scatter(s_list, z_list, c='blue', alpha=0.7, s=20)
-    ax5.set_xlabel('s (沿导线方向)')
-    ax5.set_ylabel('z (重力方向)')
-    ax5.set_title('平面投影')
+    if p0 is not None and u is not None and g_hat is not None and len(points_3d) > 0:
+        # 构造地面平面的正交基：e1 在地面且尽量贴合导线方向，e2 = g_hat × e1
+        u_plane = u - np.dot(u, g_hat) * g_hat
+        nu = np.linalg.norm(u_plane)
+        if nu < 1e-9:
+            # 若 u 与 g_hat 近共线，任选地面方向作为 e1（从世界坐标取一个与 g_hat 不平行的向量）
+            tmp = np.array([1.0, 0.0, 0.0])
+            if abs(np.dot(tmp, g_hat)) > 0.9:
+                tmp = np.array([0.0, 1.0, 0.0])
+            u_plane = tmp - np.dot(tmp, g_hat) * g_hat
+            nu = np.linalg.norm(u_plane)
+        e1 = u_plane / nu
+        e2 = np.cross(g_hat, e1)
+        e2 = e2 / (np.linalg.norm(e2) + 1e-12)
+
+        # 投影 3D 点到地面坐标 (xg, yg)
+        vecs = points_3d - p0.reshape(1, 3)
+        xg = vecs @ e1.reshape(3)
+        yg = vecs @ e2.reshape(3)
+        ax5.scatter(xg, yg, c='blue', alpha=0.7, s=20, label='地面投影点')
+
+        # 同步投影拟合曲线
+        if len(s_list) > 0:
+            s_plot = np.linspace(np.min(s_list), np.max(s_list), 200)
+            z_plot = a * np.cosh((s_plot - s0) / a) + c
+            curve_3d = (p0.reshape(1, 3)
+                        + s_plot.reshape(-1, 1) * u.reshape(1, 3)
+                        + z_plot.reshape(-1, 1) * g_hat.reshape(1, 3))
+            vecs_curve = curve_3d - p0.reshape(1, 3)
+            xg_curve = vecs_curve @ e1.reshape(3)
+            yg_curve = vecs_curve @ e2.reshape(3)
+            ax5.plot(xg_curve, yg_curve, 'r-', linewidth=2, label='拟合曲线地面投影')
+
+        ax5.set_xlabel('xg (地面坐标-轴1)')
+        ax5.set_ylabel('yg (地面坐标-轴2)')
+        ax5.set_title('地面投影')
+        ax5.legend()
+    else:
+        # 回退到原来的 (s, z) 投影
+        ax5.scatter(s_list, z_list, c='blue', alpha=0.7, s=20)
+        ax5.set_xlabel('s (沿导线方向)')
+        ax5.set_ylabel('z (重力方向)')
+        ax5.set_title('地面投影(回退)')
     ax5.grid(True, alpha=0.3)
     
-    # 5. 悬链线拟合
+    # 5. 悬链线拟合（恢复为 s-z 空间，便于与拟合曲线直观对齐）
     ax6 = plt.subplot(2, 4, 6)
-    ax6.scatter(s_list, z_list, c='blue', alpha=0.7, s=20, label='数据点')
-    
+    ax6.scatter(s_list, z_list, c='blue', alpha=0.7, s=20, label='(s, z) 数据点')
     if len(s_list) > 0:
-        s_plot = np.linspace(np.min(s_list), np.max(s_list), 100)
+        s_plot = np.linspace(np.min(s_list), np.max(s_list), 200)
         z_plot = a * np.cosh((s_plot - s0) / a) + c
         ax6.plot(s_plot, z_plot, 'r-', linewidth=2, label='拟合悬链线')
-    
-    ax6.set_xlabel('s')
-    ax6.set_ylabel('z')
-    ax6.set_title('悬链线拟合')
+    ax6.set_xlabel('s (沿导线方向)')
+    ax6.set_ylabel('z (重力方向)')
+    ax6.set_title('悬链线拟合（s-z）')
     ax6.legend()
     ax6.grid(True, alpha=0.3)
     
@@ -622,6 +697,45 @@ def plot_pipeline_summary(imgL: np.ndarray,
     plt.tight_layout()
     smart_show(title="wire_detection")
 
+
+def plot_pipeline_summary_from_results(imgL: np.ndarray,
+                                      imgR: np.ndarray,
+                                      results: dict) -> None:
+    """
+    便捷接口：从 results 字典自动提取所需字段并绘制完整流程总结图。
+    期望 results 至少包含：
+      - wire_pixelsL, wire_pixelsR, matches, points_3d
+      - s_list, z_list, catenary_params{a,s0,c}, fitting_quality
+      - plane_params{p0,u,g_hat}
+    """
+    wire_pixelsL = results.get('wire_pixelsL', np.empty((0, 2)))
+    wire_pixelsR = results.get('wire_pixelsR', np.empty((0, 2)))
+    matches = results.get('matches', [])
+    points_3d = results.get('points_3d', np.empty((0, 3)))
+    s_list = results.get('s_list', np.array([]))
+    z_list = results.get('z_list', np.array([]))
+    params = results.get('catenary_params', {})
+    a = params.get('a', 1.0)
+    s0 = params.get('s0', 0.0)
+    c = params.get('c', 0.0)
+    quality = results.get('fitting_quality', None)
+    plane = results.get('plane_params', {})
+    p0 = plane.get('p0', None)
+    u = plane.get('u', None)
+    g_hat = plane.get('g_hat', None)
+
+    plot_pipeline_summary(
+        imgL, imgR,
+        wire_pixelsL, wire_pixelsR,
+        matches,
+        points_3d,
+        s_list, z_list,
+        a, s0, c,
+        quality,
+        p0=p0,
+        u=u,
+        g_hat=g_hat
+    )
 
 if __name__ == "__main__":
     # 测试代码

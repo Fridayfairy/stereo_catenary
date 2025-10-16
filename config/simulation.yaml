@@ -1,6 +1,6 @@
 # 双目相机标定参数配置文件
 # 用于存储相机的内参和外参信息
-
+unity_coord_fix: false
 # 左相机参数 (内参和外参)
 left_camera:
   intrinsic_matrix:
@@ -9,9 +9,9 @@ left_camera:
     - [0.0, 0.0, 1.0]                       # 0, 0, 1
   rotation_matrix:
     - [1.0, 0.0, 0.0]           # 单位矩阵，左相机作为参考
-    - [0.0, 1.0, 0.0]
+    - [0.0, -1.0, 0.0]
     - [0.0, 0.0, -1.0]
-  translation_vector: [0.0, -1.0, -7.0]  # 左相机位置作为原点
+  translation_vector: [0.0, 1.0, -7.0]  # 左相机位置作为原点
 
 # 右相机参数 (内参和外参)
 right_camera:
@@ -21,12 +21,12 @@ right_camera:
     - [0.0, 0.0, 1.0]           # 0, 0, 1
   rotation_matrix:
     - [1.0, 0.0, 0.0]           # 假设右相机与左相机平行
-    - [0.0, 1.0, 0.0]
+    - [0.0, -1.0, 0.0]
     - [0.0, 0.0, -1.0]
-  translation_vector: [-0.5, -1.0, -7.0]  # 基线距离100mm
+  translation_vector: [-0.5, 1.0, -7.0]  # 平移向量
 
 # 世界坐标系重力方向 (单位向量)
-gravity_direction: [0.0, 0.0, -1.0]  # 重力向下
+gravity_direction: [0.0, -1.0, 0.0] 
 
 # 图像尺寸
 image_size:

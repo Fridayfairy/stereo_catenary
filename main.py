@@ -19,7 +19,7 @@ from plane_estimation import estimate_vertical_plane, project_to_plane, compute_
 from catenary_fit import fit_catenary, compose_catenary_3d, compute_fitting_quality, ransac_catenary_fit
 from viz import (plot_wire_detection_results, plot_stereo_matches, plot_3d_points, 
                 plot_plane_projection, plot_catenary_fitting, plot_3d_catenary_curve, 
-                plot_pipeline_summary)
+                plot_pipeline_summary, plot_pipeline_summary_from_results)
 
 
 def load_camera_config(config_path: str) -> Dict[str, Any]:
@@ -153,11 +153,9 @@ def run_stereo_catenary_pipeline(imgL: np.ndarray,
     if verbose:
         print("\n3. 三角测量...")
     
-    # 构建投影矩阵
+    # 构建投影矩阵并三角测量
     P1 = K1 @ np.hstack([R1, t1.reshape(3, 1)])
     P2 = K2 @ np.hstack([R2, t2.reshape(3, 1)])
-    
-    # 进行三角测量
     points_3d = triangulate_pairs(matches, P1, P2, method='dlt')
     
     # 过滤重投影误差过大的点
@@ -194,16 +192,53 @@ def run_stereo_catenary_pipeline(imgL: np.ndarray,
         print(f"   参考点: ({p0[0]:.2f}, {p0[1]:.2f}, {p0[2]:.2f})")
         print(f"   导线方向: ({u[0]:.2f}, {u[1]:.2f}, {u[2]:.2f})")
     
+    # 自检：点到 n_perp 的平均距离与相机基线
+    try:
+        n_perp = np.cross(u, g_hat_est)
+        n_perp = n_perp / (np.linalg.norm(n_perp) + 1e-12)
+        distances = np.abs((points_3d - p0.reshape(1, 3)) @ n_perp)
+        mean_dist = float(np.mean(distances))
+        std_dist = float(np.std(distances))
+        # 基线长度（由 t 推回相机中心）
+        C1 = -R1.T @ t1
+        C2 = -R2.T @ t2
+        baseline = float(np.linalg.norm(C1 - C2))
+        if verbose:
+            print(f"   平面一致性自检: mean|n_perp·(X-p0)| = {mean_dist:.4f} (std={std_dist:.4f})")
+            print(f"   相机中心: C1={C1}, C2={C2}, 基线长度={baseline:.4f}")
+    except Exception as _:
+        pass
+
+    # 若偏差过大，使用点云自适应平面替代以保证可视化/拟合在同一平面
+    adapt_threshold = float(config.get('plane_adapt_threshold', 0.05))
+    if 'mean_dist' in locals() and mean_dist > adapt_threshold:
+        if verbose:
+            print(f"   警告: 点云偏离估计平面较大(>{adapt_threshold}), 使用点云自适应平面进行后续投影/拟合")
+        # 使用 PCA 的第一主方向作为导线方向，法向为 n_perp，自适应得到新的 (p0,u,g_hat')
+        # 令 g_hat' 为原 g_hat 在平面内的分量归一化
+        # 重新计算 p0 为点云投到自适应平面的质心
+        # 这里直接复用 estimate_vertical_plane 的结果作为基准，仅修改 g_hat 为其在平面内分量
+        g_proj = g_hat_est - np.dot(g_hat_est, n_perp) * n_perp
+        if np.linalg.norm(g_proj) > 1e-12:
+            g_hat_adapt = g_proj / np.linalg.norm(g_proj)
+            g_hat_use = g_hat_adapt
+        else:
+            g_hat_use = g_hat_est
+        p0_use, u_use, g_hat_use = p0, u, g_hat_use
+    else:
+        p0_use, u_use, g_hat_use = p0, u, g_hat_est
+
     # 5. 平面投影
     if verbose:
         print("\n5. 平面投影...")
     
-    s_list, z_list = project_to_plane(points_3d, p0, u, g_hat_est)
+    s_list, z_list = project_to_plane(points_3d, p0_use, u_use, g_hat_use)
     # 投影后按 s 分桶剔除“竖直列”：若同一 s 桶内 z 方差过大则删除
     s_list, z_list = _remove_vertical_stripes(s_list, z_list)
     
     results['s_list'] = s_list
     results['z_list'] = z_list
+    results['plane_params'] = {'p0': p0_use, 'u': u_use, 'g_hat': g_hat_use}
     
     if verbose:
         print(f"   投影得到 {len(s_list)} 个2D点")
@@ -328,13 +363,11 @@ def main():
     主函数
     """
     parser = argparse.ArgumentParser(description='双目视觉悬链线重建')
-    parser.add_argument('--left', type=str, default='./demo/simulation/Outputs/left_20251015_174818.png', help='左图像路径')
-    parser.add_argument('--right', type=str, default='./demo/simulation/Outputs/right_20251015_174818.png', help='右图像路径')
+    parser.add_argument('--left', type=str, default='./demo/simulation/Outputs/left.png', help='左图像路径')
+    parser.add_argument('--right', type=str, default='./demo/simulation/Outputs/right.png', help='右图像路径')
     parser.add_argument('--config', type=str, default='./config/simulation.yaml', help='相机配置文件路径')
     parser.add_argument('--output', type=str, default='output', help='输出目录')
     parser.add_argument('--detect-method', type=str, default='catenary', choices=['canny_hough', 'ridge', 'skeleton', 'catenary'], help='导线像素检测方法')
-    parser.add_argument('--show-plots', action='store_true', help='显示可视化图表')
-    parser.add_argument('--save-plots', action='store_true', help='保存可视化图表')
     parser.add_argument('--verbose', action='store_true', default=True, help='显示详细信息')
     parser.add_argument('--sampson-th', type=float, default=1.2, help='Sampson误差阈值')
     parser.add_argument('--uniq-bin', type=float, default=2.0, help='右图唯一性分桶像素宽度')
@@ -360,28 +393,14 @@ def main():
         # 保存结果
         save_results(results, args.output)
         
-        # 显示/保存可视化结果
-        if args.show_plots or args.save_plots:
-            print("\n生成可视化图表...")
-            
-            # 完整流程总结图
-            plot_pipeline_summary(
-                imgL, imgR,
-                results['wire_pixelsL'], results['wire_pixelsR'],
-                results['matches'],
-                results['points_3d'],
-                results['s_list'], results['z_list'],
-                results['catenary_params']['a'],
-                results['catenary_params']['s0'],
-                results['catenary_params']['c'],
-                results['fitting_quality']
-            )
-            
-            if args.save_plots:
-                import matplotlib.pyplot as plt
-                plt.savefig(os.path.join(args.output, 'pipeline_summary.png'), 
-                           dpi=300, bbox_inches='tight')
-                print(f"可视化图表已保存到: {os.path.join(args.output, 'pipeline_summary.png')}")
+        # 生成并保存可视化结果
+        print("\n生成可视化图表并保存...")
+        plot_pipeline_summary_from_results(imgL, imgR, results)
+        import matplotlib.pyplot as plt
+        os.makedirs(args.output, exist_ok=True)
+        plt.savefig(os.path.join(args.output, 'pipeline_summary.png'), 
+                   dpi=300, bbox_inches='tight')
+        print(f"可视化图表已保存到: {os.path.join(args.output, 'pipeline_summary.png')}")
         
         # 输出最终结果
         params = results['catenary_params']
